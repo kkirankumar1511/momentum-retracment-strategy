@@ -1,0 +1,9 @@
+numpy
+pandas
+scikit-learn
+tensorflow>=2.10.0
+pyyaml
+kiteconnect
+joblib
+ta  # optional: technical indicators, but code below includes implementations
+ta-lib

@@ -1,0 +1,32 @@
+# config.yaml
+project:
+  name: lstm_stock_predictor
+  seed: 42
+
+data:
+  lookback: 60          # number of past days to use as input
+  predict_horizon: 10   # number of days to predict (we will average them)
+  feature_cols:
+    - open
+    - high
+    - low
+    - close
+  local_csv: ../data/ind_nifty10list.csv
+
+training:
+  re-train: True
+  batch_size: 32
+  epochs: 20
+  validation_split: 0.1
+  model_save_path: ../models
+  scaler_save_path: ../scalers
+
+kite:
+  api_key: "usvvbzqq7736z01b"
+  api_secret: "ocq3i8e9sfn9bp7876lf6lib14g0czih"
+  request_token: "vVC3bdciSNZv0D54tTxpEm6x8eWNTb5L"
+  access_token: "eTY6ES2GAtQqN2Kythq9SooWCd2ZsXFS"   # after login; can be updated
+  api_url: "https://api.kite.trade/session/token"
+  instrument_token_map:
+    RELIANCE: 738561  # example, replace with correct instrument tokens
+
