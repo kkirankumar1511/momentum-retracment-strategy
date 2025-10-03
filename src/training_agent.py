@@ -1,106 +1,138 @@
 import os
+from dataclasses import dataclass
+from typing import Dict, Tuple
+
 import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import pandas as pd
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
 from config import load_config
-from data_loader import get_kite_client, load_from_kite
-from features import add_technical_indicators
-from utils import create_sequences, save_model, save_scaler, get_instrument_token
-from model import build_lstm_model
+from data_loader import get_kite_client
 from instrument_token import InstrumentTokenManager
-import talib
+from model import LSTMReturnForecaster
+from pipelines.data_pipeline import MarketDataFetcher
+from pipelines.feature_pipeline import IntradayFeatureEngineer
+from strategies.intraday import IntradayStrategy
+from utils import save_model, save_scaler
 
-instrument_token_manager = InstrumentTokenManager()
 
+@dataclass
 class TrainingAgent:
+    """Coordinates data loading, feature prep, model training and evaluation."""
 
-    def __init__(self):
-        self.instrument_token_list = instrument_token_manager.get_instrument_tokens()
+    def __init__(self) -> None:
+        self.cfg = load_config()
+        data_cfg = self.cfg['data']
+        kite_cfg = self.cfg['kite']
 
-    def train_model(self, kite_instrument=None, from_date=None, to_date=None, test_split=0.2):
-        cfg = load_config()
-        data_cfg = cfg['data']
-        train_cfg = cfg['training']
-        lookback = data_cfg['lookback']
+        self.lookback = data_cfg['lookback']
+        self.feature_engineer = IntradayFeatureEngineer(self.lookback)
+        self.strategy = IntradayStrategy()
 
-        # --- Load Data ---
-        kite_cfg = cfg['kite']
-        kite = get_kite_client(kite_cfg['api_key'], kite_cfg['access_token'])
-        instrument_token = get_instrument_token(self.instrument_token_list, kite_instrument)
-        df = load_from_kite(kite, instrument_token, from_date, to_date, interval="day")
-
-        # --- Add technical indicators ---
-        df = add_technical_indicators(df)
-
-        # --- Compute returns for target ---
-        df['return'] = df['close'].pct_change()
-        df.dropna(inplace=True)
-
-        feature_cols = ['open','high','low','close','volume','rsi','ema20','ema50','macd','macdsignal','bb_upper','bb_middle','bb_lower']
-        X_df = df[feature_cols].copy()
-        y = df['return'].values.reshape(-1,1)  # target
-
-        # --- Scale features ---
-        scaler_X = MinMaxScaler()
-        X_scaled = scaler_X.fit_transform(X_df.values)
-
-        # --- Create sequences ---
-        X_seq, y_seq = create_sequences(
-            X_scaled,
-            lookback=lookback,
-            horizon=1,
-            target_indices=[feature_cols.index('close')]
+        self.kite = get_kite_client(kite_cfg['api_key'], kite_cfg['access_token'])
+        self.instrument_token_manager = InstrumentTokenManager()
+        if self.instrument_token_manager.get_instrument_tokens() is None:
+            self.instrument_token_manager.set_instrument_tokens()
+        self.fetcher = MarketDataFetcher(
+            kite_client=self.kite,
+            interval=data_cfg.get('interval', '15minute'),
+            instrument_tokens=self.instrument_token_manager.get_instrument_tokens(),
         )
-        # Fix broadcasting error
-        y_seq[:,0] = y[lookback:].flatten()
 
-        # --- Train/test split ---
-        split_idx = int(len(X_seq)*(1-test_split))
-        X_train, X_test = X_seq[:split_idx], X_seq[split_idx:]
-        y_train, y_test = y_seq[:split_idx], y_seq[split_idx:]
+    def train_model(
+        self,
+        kite_instrument: str,
+        from_date: str,
+        to_date: str,
+        test_split: float = 0.2,
+    ) -> Tuple[LSTMReturnForecaster, object, Dict[str, float]]:
+        raw_df = self.fetcher.fetch(kite_instrument, from_date, to_date)
+        feature_frame = self.feature_engineer.prepare_training_frame(raw_df)
+        scaled_features, scaler = self.feature_engineer.scale_features(feature_frame)
+        X, y, meta = self.feature_engineer.build_supervised_dataset(feature_frame, scaled_features)
 
-        # --- Build model ---
-        model = build_lstm_model(input_shape=(X_train.shape[1], X_train.shape[2]), output_dim=1)
+        split_idx = int(len(X) * (1 - test_split))
+        X_train, X_test = X[:split_idx], X[split_idx:]
+        y_train, y_test = y[:split_idx], y[split_idx:]
+        meta_test = meta.iloc[split_idx:].reset_index(drop=True)
 
-        # --- Train ---
-        history = model.fit(
-            X_train, y_train,
-            epochs=train_cfg['epochs'],
-            batch_size=train_cfg['batch_size'],
+        if len(X_test) == 0:
+            raise ValueError(
+                "Test set is empty. Increase the data window or adjust the test_split proportion."
+            )
+
+        model = LSTMReturnForecaster(
+            input_shape=(self.lookback, len(self.feature_engineer.FEATURE_COLUMNS))
+        )
+        model.fit(
+            X_train,
+            y_train,
+            epochs=self.cfg['training']['epochs'],
+            batch_size=self.cfg['training']['batch_size'],
             validation_split=0.1,
-            verbose=1
+            verbose=1,
         )
 
-        # --- Predict ---
-        y_pred = model.predict(X_test)
-        # Reconstruct actual prices
-        last_close_test = df['close'].values[lookback+split_idx-1:-1]
-        pred_close = last_close_test * (1 + y_pred.flatten())
-        actual_close = df['close'].values[lookback+split_idx:]
+        predicted_returns = model.predict(X_test).flatten()
+        actual_returns = y_test.flatten()
+        predicted_close = meta_test['close'].values * (1 + predicted_returns)
+        actual_close = meta_test['future_close'].values
 
-        # --- Metrics ---
-        rmse = np.sqrt(mean_squared_error(actual_close, pred_close))
-        mae = mean_absolute_error(actual_close, pred_close)
-        r2 = r2_score(actual_close, pred_close)
-        print(f"\n✅ Test Metrics for {kite_instrument}: RMSE={rmse:.2f}, MAE={mae:.2f}, R²={r2:.3f}")
+        rmse = float(np.sqrt(mean_squared_error(actual_close, predicted_close)))
+        mae = float(mean_absolute_error(actual_close, predicted_close))
+        r2 = float(r2_score(actual_close, predicted_close))
+        directional_accuracy = float(
+            (np.sign(predicted_returns) == np.sign(actual_returns)).mean() * 100
+        )
 
-        # --- Plot ---
-        plt.figure(figsize=(12,6))
-        plt.plot(actual_close, label='Actual Close')
-        plt.plot(pred_close, label='Predicted Close')
-        plt.title(f"Predicted vs Actual Close Price ({kite_instrument})")
-        plt.xlabel("Days")
-        plt.ylabel("Price")
-        plt.legend()
-        plt.show()
+        strategy_frame = self._build_strategy_frame(meta_test, predicted_returns, predicted_close)
+        strategy_accuracy = float(self.strategy.evaluate(strategy_frame) * 100)
 
-        # --- Save model & scaler ---
+        print(
+            f"\n✅ Test Metrics for {kite_instrument}: RMSE={rmse:.2f}, MAE={mae:.2f}, R²={r2:.3f}, "
+            f"Directional Accuracy={directional_accuracy:.2f}%"
+        )
+        print(f"✅ Strategy accuracy on actionable signals: {strategy_accuracy:.2f}%")
+
+        train_cfg = self.cfg['training']
         model_path = os.path.join(train_cfg['model_save_path'], f"{kite_instrument}_return_lstm.keras")
         scaler_path = os.path.join(train_cfg['scaler_save_path'], f"{kite_instrument}_return.pkl")
-        save_model(model, model_path)
-        save_scaler(scaler_X, scaler_path)
+        save_model(model.model, model_path)
+        save_scaler(scaler, scaler_path)
         print(f"\n✅ Model saved to {model_path}")
         print(f"✅ Scaler saved to {scaler_path}")
 
-        return model, scaler_X
+        metrics = {
+            'rmse': rmse,
+            'mae': mae,
+            'r2': r2,
+            'directional_accuracy': directional_accuracy,
+            'strategy_accuracy': strategy_accuracy,
+        }
+
+        return model, scaler, metrics
+
+    def _build_strategy_frame(
+        self,
+        meta: pd.DataFrame,
+        predicted_returns: np.ndarray,
+        predicted_close: np.ndarray,
+    ) -> pd.DataFrame:
+        frame = meta.copy()
+        frame['RSI'] = frame['rsi']
+        frame['Close'] = frame['close']
+        frame['EMA_200'] = frame['ema200']
+        frame['EMA_50'] = frame['ema50']
+        frame['EMA_20'] = frame['ema20']
+        frame['prev_day_touch_EMA20'] = frame['prev_day_touch_ema20']
+        frame['prev_day_touch_EMA50'] = frame['prev_day_touch_ema50']
+        frame['prev_day_Close'] = frame['prev_day_close']
+        frame['prev_day_Open'] = frame['prev_day_open']
+        frame['prev_day_Low'] = frame['prev_day_low']
+        frame['5_day_min_of_close'] = frame['min_5_day_close']
+        frame['Avg_2_days_Volume'] = frame['avg_2_days_volume']
+        frame['Avg_10_days_Volume'] = frame['avg_10_days_volume']
+        frame['Signal'] = (predicted_returns > 0).astype(int)
+        frame['predicted_return'] = predicted_returns
+        frame['predicted_close'] = predicted_close
+        return frame
