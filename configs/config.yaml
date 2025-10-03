@@ -7,8 +7,8 @@ data:
   lookback: 60          # number of past days to use as input
   predict_horizon: 10   # number of days to predict (we will average them)
   interval: 15minute
-  train_from: '2023-01-01'
-  train_to: '2023-12-31'
+  train_from: '2024-09-01 09:15:00'
+  train_to: '2025-03-01 15:30:00'
   inference_window_days: 5
   feature_cols:
     - open
@@ -28,8 +28,8 @@ training:
 kite:
   api_key: "usvvbzqq7736z01b"
   api_secret: "ocq3i8e9sfn9bp7876lf6lib14g0czih"
-  request_token: "vVC3bdciSNZv0D54tTxpEm6x8eWNTb5L"
-  access_token: "eTY6ES2GAtQqN2Kythq9SooWCd2ZsXFS"   # after login; can be updated
+  request_token: "3wNFjtk5DcHT0O96IEt6hYrv7yYKL8yN"
+  access_token: "cdDYsM3hgmJQ3oOV72iGxYlE8CUMLw1F"   # after login; can be updated
   api_url: "https://api.kite.trade/session/token"
   instrument_token_map:
     RELIANCE: 738561  # example, replace with correct instrument tokens
