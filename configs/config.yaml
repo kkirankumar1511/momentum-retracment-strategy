@@ -6,6 +6,10 @@ project:
 data:
   lookback: 60          # number of past days to use as input
   predict_horizon: 10   # number of days to predict (we will average them)
+  interval: 15minute
+  train_from: '2023-01-01'
+  train_to: '2023-12-31'
+  inference_window_days: 5
   feature_cols:
     - open
     - high
