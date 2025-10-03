@@ -26,7 +26,8 @@ class PredictAgent:
 
         self.lookback = data_cfg['lookback']
         self.feature_engineer = IntradayFeatureEngineer(self.lookback)
-        self.strategy = IntradayStrategy()
+        strategy_cfg = self.cfg.get('strategy', {})
+        self.strategy = IntradayStrategy(**strategy_cfg)
 
         self.kite = get_kite_client(kite_cfg['api_key'], kite_cfg['access_token'])
         self.instrument_token_manager = InstrumentTokenManager()
@@ -47,6 +48,18 @@ class PredictAgent:
             self.cfg['training']['scaler_save_path'],
             f"{instrument_name}_return.pkl",
         )
+        if not os.path.exists(model_path) or not os.path.exists(scaler_path):
+            missing = []
+            if not os.path.exists(model_path):
+                missing.append(model_path)
+            if not os.path.exists(scaler_path):
+                missing.append(scaler_path)
+            missing_str = ', '.join(missing)
+            raise FileNotFoundError(
+                f"Missing trained artefacts for {instrument_name}. "
+                f"Expected files: {missing_str}. Run training once to create them."
+            )
+
         model = load_model(model_path)
         scaler = joblib.load(scaler_path)
         return model, scaler

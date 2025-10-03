@@ -5,6 +5,7 @@ from typing import Dict, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
 from config import load_config
 from data_loader import get_kite_client
@@ -27,7 +28,8 @@ class TrainingAgent:
 
         self.lookback = data_cfg['lookback']
         self.feature_engineer = IntradayFeatureEngineer(self.lookback)
-        self.strategy = IntradayStrategy()
+        strategy_cfg = self.cfg.get('strategy', {})
+        self.strategy = IntradayStrategy(**strategy_cfg)
 
         self.kite = get_kite_client(kite_cfg['api_key'], kite_cfg['access_token'])
         self.instrument_token_manager = InstrumentTokenManager()
@@ -64,13 +66,28 @@ class TrainingAgent:
         model = LSTMReturnForecaster(
             input_shape=(self.lookback, len(self.feature_engineer.FEATURE_COLUMNS))
         )
+        train_cfg = self.cfg['training']
+        callbacks = [
+            EarlyStopping(
+                monitor='val_loss',
+                patience=int(train_cfg.get('early_stopping_patience', 5)),
+                restore_best_weights=True,
+            ),
+            ReduceLROnPlateau(
+                monitor='val_loss',
+                patience=int(train_cfg.get('reduce_lr_patience', 3)),
+                factor=0.5,
+                min_lr=float(train_cfg.get('min_learning_rate', 1e-5)),
+            ),
+        ]
         model.fit(
             X_train,
             y_train,
-            epochs=self.cfg['training']['epochs'],
-            batch_size=self.cfg['training']['batch_size'],
-            validation_split=0.1,
+            epochs=train_cfg['epochs'],
+            batch_size=train_cfg['batch_size'],
+            validation_split=train_cfg.get('validation_split', 0.1),
             verbose=1,
+            callbacks=callbacks,
         )
 
         predicted_returns = model.predict(X_test).flatten()
@@ -94,7 +111,6 @@ class TrainingAgent:
         )
         print(f"✅ Strategy accuracy on actionable signals: {strategy_accuracy:.2f}%")
 
-        train_cfg = self.cfg['training']
         model_path = os.path.join(train_cfg['model_save_path'], f"{kite_instrument}_return_lstm.keras")
         scaler_path = os.path.join(train_cfg['scaler_save_path'], f"{kite_instrument}_return.pkl")
         save_model(model.model, model_path)
