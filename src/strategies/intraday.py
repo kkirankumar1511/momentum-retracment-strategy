@@ -11,21 +11,11 @@ Decision = Literal['BUY', 'SELL', 'HOLD']
 class IntradayStrategy:
     """Encapsulates the user supplied intraday rule-set."""
 
-    min_predicted_return: Optional[float] = None
+    min_predicted_return: float = 0.003
     min_buy_rsi: float = 52.0
     max_sell_rsi: float = 45.0
     require_ema_alignment: bool = True
     min_volume_ratio: float = 1.0
-    atr_multiple: float = 1.5
-
-    def _threshold(self) -> float:
-        """Resolved minimum predicted return threshold in absolute terms."""
-        if self.min_predicted_return is None:
-            return 0.0
-        try:
-            return max(0.0, float(self.min_predicted_return))
-        except (TypeError, ValueError):
-            return 0.0
 
     def _volume_ratio(self, row: pd.Series) -> float:
         avg_10 = row.get('Avg_10_days_Volume', 0.0)
@@ -79,23 +69,12 @@ class IntradayStrategy:
 
     def _generate_signal(self, row: pd.Series) -> Decision:
         predicted_return = float(row.get('predicted_return', 0.0))
-        threshold = self._threshold()
-        close = float(row.get('Close', 0.0))
-        predicted_close = float(row.get('predicted_close', close))
-        projected_move = predicted_close - close
-        atr = float(row.get('ATR', 0.0))
-        required_move = abs(atr * self.atr_multiple) if atr and np.isfinite(atr) else 0.0
-
-        if predicted_return >= threshold and row.get('Signal', 1) == 1:
-            if projected_move <= 0 or abs(projected_move) < required_move:
-                return 'HOLD'
+        if predicted_return >= self.min_predicted_return and row.get('Signal', 1) == 1:
             if self._passes_buy_filters(row):
                 return 'BUY'
             return 'HOLD'
 
-        if predicted_return <= -threshold:
-            if projected_move >= 0 or abs(projected_move) < required_move:
-                return 'HOLD'
+        if predicted_return <= -self.min_predicted_return:
             if self._passes_sell_filters(row):
                 return 'SELL'
             return 'HOLD'

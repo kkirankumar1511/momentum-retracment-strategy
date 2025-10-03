@@ -29,13 +29,11 @@ training:
   scaler_save_path: ../scalers
 
 strategy:
-  min_predicted_return: auto     # auto-calibrate from historical target returns
-  min_return_percentile: 85      # percentile of |returns| used when auto-calibrating
+  min_predicted_return: 0.003   # require at least 0.3% expected move before acting
   min_buy_rsi: 52.0
   max_sell_rsi: 45.0
   require_ema_alignment: true   # insist on EMA trend confirmation
   min_volume_ratio: 1.0         # Avg_2_days_Volume / Avg_10_days_Volume must exceed this
-  atr_multiple: 1.5              # ATR-based stop-loss distance multiplier
 
 kite:
   api_key: "usvvbzqq7736z01b"
