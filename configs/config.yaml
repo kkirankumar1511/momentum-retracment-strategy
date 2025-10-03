@@ -9,7 +9,7 @@ data:
   interval: 15minute
   train_from: '2024-09-01 09:15:00'
   train_to: '2025-03-01 15:30:00'
-  inference_window_days: 5
+  inference_window_days: 5  # minimum fetch window; auto-raised to satisfy the longest EMA
   feature_cols:
     - open
     - high

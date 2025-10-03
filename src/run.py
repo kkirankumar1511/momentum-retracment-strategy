@@ -1,3 +1,4 @@
+import math
 import os
 from datetime import timedelta
 
@@ -24,7 +25,26 @@ if __name__ == "__main__":
     predict_agent = PredictAgent()
 
     instruments_df = csv_loader(data_cfg['local_csv'])
+
+    interval = str(data_cfg.get('interval', '15minute'))
+    try:
+        interval_minutes = int(''.join(filter(str.isdigit, interval)))
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid interval format '{interval}'. Expected minutes like '15minute'."
+        ) from exc
+    if interval_minutes <= 0:
+        raise ValueError(
+            f"Invalid interval minutes derived from '{interval}'. Must be positive."
+        )
+
+    trading_minutes = 375  # 09:15 to 15:30 NSE trading session
+    bars_per_day = max(1, trading_minutes // interval_minutes)
+
     inference_days = int(data_cfg.get('inference_window_days', 5))
+    lookback_bars = int(data_cfg.get('lookback', 0))
+    required_days = math.ceil(max(lookback_bars, 200) / bars_per_day)
+    inference_days = max(inference_days, required_days)
     train_from = data_cfg.get('train_from', '2024-09-01 09:15:00')
     train_to = data_cfg.get('train_to', '2025-03-01 15:30:00')
 
