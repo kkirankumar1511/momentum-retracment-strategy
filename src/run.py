@@ -48,24 +48,53 @@ if __name__ == "__main__":
     train_from = data_cfg.get('train_from', '2024-09-01 09:15:00')
     train_to = data_cfg.get('train_to', '2025-03-01 15:30:00')
 
+    training_cfg = cfg['training']
+    model_dir = training_cfg.get('model_save_path', '../models')
+    scaler_dir = training_cfg.get('scaler_save_path', '../scalers')
+    force_retrain = training_cfg.get('re-train', True)
+
     for instrument_name in instruments_df['Symbol']:
         print(f"\n=== Processing {instrument_name} ===")
-        try:
-            training_agent.train_model(
-                kite_instrument=instrument_name,
-                from_date=train_from,
-                to_date=train_to,
+        model_path = os.path.join(
+            model_dir, f"{instrument_name}_return_lstm.keras"
+        )
+        scaler_path = os.path.join(
+            scaler_dir, f"{instrument_name}_return.pkl"
+        )
+
+        artefacts_exist = os.path.exists(model_path) and os.path.exists(scaler_path)
+        should_train = force_retrain or not artefacts_exist
+
+        if should_train:
+            if not artefacts_exist and not force_retrain:
+                print(
+                    "ℹ️ Model artefacts missing; triggering a one-time training run."
+                )
+            try:
+                training_agent.train_model(
+                    kite_instrument=instrument_name,
+                    from_date=train_from,
+                    to_date=train_to,
+                )
+            except ValueError as exc:
+                print(f"⚠️ Skipping {instrument_name}: {exc}")
+                continue
+        else:
+            print(
+                "⏭️  Using cached model artefacts (set training.re-train=True to force retraining)."
             )
-        except ValueError as exc:
-            print(f"⚠️ Skipping {instrument_name}: {exc}")
-            continue
 
         inference_start = (
             pd.to_datetime(train_to) - timedelta(days=inference_days)
         ).strftime('%Y-%m-%d')
-        signal_df = predict_agent.predict_next_interval(
-            instrument_name=instrument_name,
-            from_date=inference_start,
-            to_date=train_to,
-        )
+        try:
+            signal_df = predict_agent.predict_next_interval(
+                instrument_name=instrument_name,
+                from_date=inference_start,
+                to_date=train_to,
+            )
+        except FileNotFoundError as exc:
+            print(f"⚠️ Unable to run inference for {instrument_name}: {exc}")
+            continue
+
         print(signal_df)

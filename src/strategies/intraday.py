@@ -11,39 +11,73 @@ Decision = Literal['BUY', 'SELL', 'HOLD']
 class IntradayStrategy:
     """Encapsulates the user supplied intraday rule-set."""
 
+    min_predicted_return: float = 0.003
+    min_buy_rsi: float = 52.0
+    max_sell_rsi: float = 45.0
+    require_ema_alignment: bool = True
+    min_volume_ratio: float = 1.0
+
+    def _volume_ratio(self, row: pd.Series) -> float:
+        avg_10 = row.get('Avg_10_days_Volume', 0.0)
+        if avg_10 <= 0:
+            return np.inf
+        return row.get('Avg_2_days_Volume', 0.0) / avg_10
+
+    def _is_bullish_trend(self, row: pd.Series) -> bool:
+        ema20 = row.get('EMA_20', 0.0)
+        ema50 = row.get('EMA_50', 0.0)
+        ema200 = row.get('EMA_200', 0.0)
+        close = row.get('Close', 0.0)
+        if not self.require_ema_alignment:
+            return close > ema200
+        return close > ema200 and ema20 >= ema50 >= ema200
+
+    def _is_bearish_trend(self, row: pd.Series) -> bool:
+        ema20 = row.get('EMA_20', 0.0)
+        ema50 = row.get('EMA_50', 0.0)
+        ema200 = row.get('EMA_200', 0.0)
+        close = row.get('Close', 0.0)
+        if not self.require_ema_alignment:
+            return close < ema50
+        return close < ema50 and ema20 <= ema50 <= ema200
+
+    def _passes_buy_filters(self, row: pd.Series) -> bool:
+        if row.get('RSI', 0.0) < self.min_buy_rsi:
+            return False
+        if row.get('divergence', 0) == -1:
+            return False
+        if not bool(row.get('prev_day_touch_EMA20', False)):
+            return False
+        if not bool(row.get('prev_day_touch_EMA50', False)):
+            return False
+        if row.get('Close', 0.0) <= row.get('prev_day_Close', -np.inf):
+            return False
+        if row.get('Close', 0.0) <= row.get('prev_day_Open', -np.inf):
+            return False
+        if row.get('5_day_min_of_close', 0.0) <= row.get('EMA_50', 0.0):
+            return False
+        if self._volume_ratio(row) < self.min_volume_ratio:
+            return False
+        return self._is_bullish_trend(row)
+
+    def _passes_sell_filters(self, row: pd.Series) -> bool:
+        if row.get('RSI', 100.0) > self.max_sell_rsi:
+            return False
+        if self._volume_ratio(row) < self.min_volume_ratio:
+            return False
+        return self._is_bearish_trend(row)
+
     def _generate_signal(self, row: pd.Series) -> Decision:
-        condition1 = row.get('RSI', 0) > 50
-        condition2 = row.get('Close', 0) > row.get('EMA_200', 0)
-        condition3 = bool(row.get('prev_day_touch_EMA20', False))
-        condition6 = bool(row.get('prev_day_touch_EMA50', False))
-        condition4 = (
-            row.get('Close', 0) > row.get('prev_day_Close', -np.inf)
-            and row.get('Close', 0) > row.get('prev_day_Open', -np.inf)
-        )
-        condition5 = row.get('divergence', 0) != -1
-        condition7 = row.get('5_day_min_of_close', 0) > row.get('EMA_50', 0)
-        is_signal_predict = row.get('Signal', 1) == 1
-        is_avg_vol_grt_curr_vol = (
-            row.get('Avg_2_days_Volume', 0) >= row.get('Avg_10_days_Volume', 0)
-        )
+        predicted_return = float(row.get('predicted_return', 0.0))
+        if predicted_return >= self.min_predicted_return and row.get('Signal', 1) == 1:
+            if self._passes_buy_filters(row):
+                return 'BUY'
+            return 'HOLD'
 
-        if all(
-            [
-                condition1,
-                condition2,
-                condition3,
-                condition4,
-                condition5,
-                condition6,
-                condition7,
-                is_signal_predict,
-                is_avg_vol_grt_curr_vol,
-            ]
-        ):
-            return 'BUY'
-
-        if row.get('Close', 0) < row.get('EMA_50', float('inf')) and row.get('RSI', 100) < 40:
-            return 'SELL'
+        if predicted_return <= -self.min_predicted_return:
+            if self._passes_sell_filters(row):
+                return 'SELL'
+            return 'HOLD'
 
         return 'HOLD'
 
