@@ -1,5 +1,5 @@
 from config import load_config
-from src.data_loader import get_kite_client, get_instrument_tokens
+from data_loader import get_kite_client, get_instrument_tokens
 
 class InstrumentTokenManager:
     _instance = None
