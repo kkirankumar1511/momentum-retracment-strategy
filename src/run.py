@@ -25,8 +25,8 @@ if __name__ == "__main__":
 
     instruments_df = csv_loader(data_cfg['local_csv'])
     inference_days = int(data_cfg.get('inference_window_days', 5))
-    train_from = data_cfg.get('train_from', '2023-01-01')
-    train_to = data_cfg.get('train_to', '2023-12-31')
+    train_from = data_cfg.get('train_from', '2024-09-01 09:15:00')
+    train_to = data_cfg.get('train_to', '2025-03-01 15:30:00')
 
     for instrument_name in instruments_df['Symbol']:
         print(f"\n=== Processing {instrument_name} ===")
