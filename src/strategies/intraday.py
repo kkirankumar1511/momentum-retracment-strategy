@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -84,13 +84,27 @@ class IntradayStrategy:
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         result = df.copy()
         result['decision'] = result.apply(self._generate_signal, axis=1)
+        if 'ATR' in result.columns:
+            atr = result['ATR'].fillna(0.0).abs()
+        else:
+            atr = 0.0
+        stop_loss = np.where(
+            result['decision'] == 'BUY',
+            result['Close'] - atr * self.atr_multiple,
+            np.where(
+                result['decision'] == 'SELL',
+                result['Close'] + atr * self.atr_multiple,
+                np.nan,
+            ),
+        )
+        result['stop_loss'] = stop_loss
         return result
 
     def evaluate(self, df: pd.DataFrame) -> float:
         evaluated = self.apply(df)
         actionable = evaluated[evaluated['decision'] != 'HOLD']
         if actionable.empty:
-            return 0.0
+            return float('nan')
 
         def _is_correct(row: pd.Series) -> bool:
             future_close = row.get('future_close')

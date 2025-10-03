@@ -14,7 +14,8 @@ from features import add_intraday_strategy_features
 class IntradayFeatureEngineer:
     lookback: int
 
-    FEATURE_COLUMNS = [
+    # Columns used strictly as model inputs when forecasting the next close.
+    PREDICTOR_COLUMNS = [
         'open',
         'high',
         'low',
@@ -29,6 +30,10 @@ class IntradayFeatureEngineer:
         'bb_upper',
         'bb_middle',
         'bb_lower',
+    ]
+
+    # Supplementary columns required for the trading strategy evaluation/decision logic.
+    STRATEGY_COLUMNS = [
         'prev_day_close',
         'prev_day_open',
         'prev_day_low',
@@ -40,7 +45,10 @@ class IntradayFeatureEngineer:
         'avg_2_days_volume',
         'avg_10_days_volume',
         'divergence',
+        'atr',
     ]
+
+    FEATURE_COLUMNS = PREDICTOR_COLUMNS + STRATEGY_COLUMNS
 
     def prepare_training_frame(self, df: pd.DataFrame) -> pd.DataFrame:
         frame = add_intraday_strategy_features(df)
@@ -61,7 +69,7 @@ class IntradayFeatureEngineer:
         frame: pd.DataFrame,
         scaler: Optional[MinMaxScaler] = None,
     ) -> Tuple[np.ndarray, MinMaxScaler]:
-        features = frame[self.FEATURE_COLUMNS].copy()
+        features = frame[self.PREDICTOR_COLUMNS].copy()
         for col in features.columns:
             if features[col].dtype == bool:
                 features[col] = features[col].astype(int)
