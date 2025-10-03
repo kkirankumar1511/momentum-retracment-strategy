@@ -9,7 +9,7 @@ data:
   interval: 15minute
   train_from: '2024-09-01 09:15:00'
   train_to: '2025-03-01 15:30:00'
-  inference_window_days: 5
+  inference_window_days: 5  # minimum fetch window; auto-raised to satisfy the longest EMA
   feature_cols:
     - open
     - high
@@ -18,12 +18,24 @@ data:
   local_csv: ../data/ind_nifty10list.csv
 
 training:
-  re-train: True
+  re-train: False          # set True to force retraining even if cached artefacts exist
   batch_size: 32
   epochs: 20
   validation_split: 0.1
+  early_stopping_patience: 5
+  reduce_lr_patience: 3
+  min_learning_rate: 1.0e-05
   model_save_path: ../models
   scaler_save_path: ../scalers
+
+strategy:
+  min_predicted_return: auto     # auto-calibrate from historical target returns
+  min_return_percentile: 85      # percentile of |returns| used when auto-calibrating
+  min_buy_rsi: 52.0
+  max_sell_rsi: 45.0
+  require_ema_alignment: true   # insist on EMA trend confirmation
+  min_volume_ratio: 1.0         # Avg_2_days_Volume / Avg_10_days_Volume must exceed this
+  atr_multiple: 1.5              # ATR-based stop-loss distance multiplier
 
 kite:
   api_key: "usvvbzqq7736z01b"

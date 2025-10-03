@@ -25,6 +25,8 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['bb_middle'] = middle
     df['bb_lower'] = lower
 
+    df['atr'] = talib.ATR(df['high'], df['low'], close, timeperiod=14)
+
     df.bfill(inplace=True)
     df.ffill(inplace=True)
     return df
@@ -101,8 +103,17 @@ def add_intraday_strategy_features(df: pd.DataFrame) -> pd.DataFrame:
     for col in bool_cols:
         df[col] = df[col].fillna(False).astype(bool)
 
-    df[['avg_2_days_volume', 'avg_10_days_volume', 'min_5_day_close', 'prev_ema_20', 'prev_ema_50']] = (
-        df[['avg_2_days_volume', 'avg_10_days_volume', 'min_5_day_close', 'prev_ema_20', 'prev_ema_50']]
+    df[['avg_2_days_volume', 'avg_10_days_volume', 'min_5_day_close', 'prev_ema_20', 'prev_ema_50', 'atr']] = (
+        df[
+            [
+                'avg_2_days_volume',
+                'avg_10_days_volume',
+                'min_5_day_close',
+                'prev_ema_20',
+                'prev_ema_50',
+                'atr',
+            ]
+        ]
         .fillna(0.0)
     )
     df[['prev_day_low', 'prev_day_close', 'prev_day_open']] = (

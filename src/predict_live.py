@@ -26,7 +26,8 @@ class PredictAgent:
 
         self.lookback = data_cfg['lookback']
         self.feature_engineer = IntradayFeatureEngineer(self.lookback)
-        self.strategy = IntradayStrategy()
+        strategy_cfg = self.cfg.get('strategy', {})
+        self.strategy = IntradayStrategy(**strategy_cfg)
 
         self.kite = get_kite_client(kite_cfg['api_key'], kite_cfg['access_token'])
         self.instrument_token_manager = InstrumentTokenManager()
@@ -47,6 +48,18 @@ class PredictAgent:
             self.cfg['training']['scaler_save_path'],
             f"{instrument_name}_return.pkl",
         )
+        if not os.path.exists(model_path) or not os.path.exists(scaler_path):
+            missing = []
+            if not os.path.exists(model_path):
+                missing.append(model_path)
+            if not os.path.exists(scaler_path):
+                missing.append(scaler_path)
+            missing_str = ', '.join(missing)
+            raise FileNotFoundError(
+                f"Missing trained artefacts for {instrument_name}. "
+                f"Expected files: {missing_str}. Run training once to create them."
+            )
+
         model = load_model(model_path)
         scaler = joblib.load(scaler_path)
         return model, scaler
@@ -60,6 +73,7 @@ class PredictAgent:
         model, scaler = self.load_model_and_scaler(instrument_name)
         raw_df = self.fetcher.fetch(instrument_name, from_date, to_date)
         feature_frame = self.feature_engineer.prepare_inference_frame(raw_df)
+        self._calibrate_min_predicted_return(feature_frame)
         scaled_features, _ = self.feature_engineer.scale_features(feature_frame, scaler=scaler)
         sequence = self.feature_engineer.build_prediction_sequence(scaled_features)
 
@@ -84,6 +98,7 @@ class PredictAgent:
             'EMA_200': row['ema200'],
             'EMA_50': row['ema50'],
             'EMA_20': row['ema20'],
+            'ATR': row['atr'],
             'prev_day_touch_EMA20': bool(row['prev_day_touch_ema20']),
             'prev_day_touch_EMA50': bool(row['prev_day_touch_ema50']),
             'prev_day_Close': row['prev_day_close'],
@@ -96,6 +111,25 @@ class PredictAgent:
             'Signal': int(predicted_return > 0),
             'predicted_return': predicted_return,
             'predicted_close': predicted_close,
+            'projected_move': predicted_close - row['close'],
+            'stop_loss_buy': row['close'] - row['atr'] * self.strategy.atr_multiple,
+            'stop_loss_sell': row['close'] + row['atr'] * self.strategy.atr_multiple,
             'future_close': row.get('future_close', np.nan),
         }
         return pd.DataFrame([payload])
+
+    def _calibrate_min_predicted_return(self, frame: pd.DataFrame) -> float:
+        strategy_cfg = self.cfg.get('strategy', {})
+        configured = strategy_cfg.get('min_predicted_return')
+        percentile = float(strategy_cfg.get('min_return_percentile', 85))
+        if configured is None or (isinstance(configured, str) and configured.lower() == 'auto'):
+            abs_returns = frame['target_return'].abs().dropna()
+            if abs_returns.empty:
+                resolved = 0.0
+            else:
+                resolved = float(np.percentile(abs_returns, percentile))
+            self.strategy.min_predicted_return = resolved
+        else:
+            resolved = float(configured)
+            self.strategy.min_predicted_return = resolved
+        return resolved
