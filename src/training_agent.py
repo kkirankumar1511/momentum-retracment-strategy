@@ -26,8 +26,9 @@ class TrainingAgent:
         data_cfg = self.cfg['data']
         kite_cfg = self.cfg['kite']
 
-        self.lookback = data_cfg['lookback']
-        self.feature_engineer = IntradayFeatureEngineer(self.lookback)
+        self.lookback = int(data_cfg['lookback'])
+        self.horizon = int(data_cfg.get('predict_horizon', 1))
+        self.feature_engineer = IntradayFeatureEngineer(self.lookback, self.horizon)
         strategy_cfg = self.cfg.get('strategy', {})
         self.strategy = IntradayStrategy(**strategy_cfg)
 
@@ -154,21 +155,10 @@ class TrainingAgent:
         frame['EMA_200'] = frame['ema200']
         frame['EMA_50'] = frame['ema50']
         frame['EMA_20'] = frame['ema20']
-        frame['ATR'] = frame['atr']
-        frame['prev_day_touch_EMA20'] = frame['prev_day_touch_ema20']
-        frame['prev_day_touch_EMA50'] = frame['prev_day_touch_ema50']
-        frame['prev_day_Close'] = frame['prev_day_close']
-        frame['prev_day_Open'] = frame['prev_day_open']
-        frame['prev_day_Low'] = frame['prev_day_low']
-        frame['5_day_min_of_close'] = frame['min_5_day_close']
-        frame['Avg_2_days_Volume'] = frame['avg_2_days_volume']
-        frame['Avg_10_days_Volume'] = frame['avg_10_days_volume']
         frame['Signal'] = (predicted_returns > 0).astype(int)
         frame['predicted_return'] = predicted_returns
         frame['predicted_close'] = predicted_close
         frame['projected_move'] = frame['predicted_close'] - frame['Close']
-        frame['stop_loss_buy'] = frame['Close'] - frame['ATR'] * self.strategy.atr_multiple
-        frame['stop_loss_sell'] = frame['Close'] + frame['ATR'] * self.strategy.atr_multiple
         return frame
 
     def _calibrate_min_predicted_return(self, frame: pd.DataFrame) -> float:
