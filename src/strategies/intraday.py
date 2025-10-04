@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -15,14 +15,6 @@ class IntradayStrategy:
     min_buy_rsi: float = 52.0
     max_sell_rsi: float = 45.0
     require_ema_alignment: bool = True
-    min_volume_ratio: float = 1.0
-
-    def _volume_ratio(self, row: pd.Series) -> float:
-        avg_10 = row.get('Avg_10_days_Volume', 0.0)
-        if avg_10 <= 0:
-            return np.inf
-        return row.get('Avg_2_days_Volume', 0.0) / avg_10
-
     def _is_bullish_trend(self, row: pd.Series) -> bool:
         ema20 = row.get('EMA_20', 0.0)
         ema50 = row.get('EMA_50', 0.0)
@@ -44,26 +36,10 @@ class IntradayStrategy:
     def _passes_buy_filters(self, row: pd.Series) -> bool:
         if row.get('RSI', 0.0) < self.min_buy_rsi:
             return False
-        if row.get('divergence', 0) == -1:
-            return False
-        if not bool(row.get('prev_day_touch_EMA20', False)):
-            return False
-        if not bool(row.get('prev_day_touch_EMA50', False)):
-            return False
-        if row.get('Close', 0.0) <= row.get('prev_day_Close', -np.inf):
-            return False
-        if row.get('Close', 0.0) <= row.get('prev_day_Open', -np.inf):
-            return False
-        if row.get('5_day_min_of_close', 0.0) <= row.get('EMA_50', 0.0):
-            return False
-        if self._volume_ratio(row) < self.min_volume_ratio:
-            return False
         return self._is_bullish_trend(row)
 
     def _passes_sell_filters(self, row: pd.Series) -> bool:
         if row.get('RSI', 100.0) > self.max_sell_rsi:
-            return False
-        if self._volume_ratio(row) < self.min_volume_ratio:
             return False
         return self._is_bearish_trend(row)
 
@@ -84,20 +60,7 @@ class IntradayStrategy:
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         result = df.copy()
         result['decision'] = result.apply(self._generate_signal, axis=1)
-        if 'ATR' in result.columns:
-            atr = result['ATR'].fillna(0.0).abs()
-        else:
-            atr = 0.0
-        stop_loss = np.where(
-            result['decision'] == 'BUY',
-            result['Close'] - atr * self.atr_multiple,
-            np.where(
-                result['decision'] == 'SELL',
-                result['Close'] + atr * self.atr_multiple,
-                np.nan,
-            ),
-        )
-        result['stop_loss'] = stop_loss
+        result['stop_loss'] = np.nan
         return result
 
     def evaluate(self, df: pd.DataFrame) -> float:

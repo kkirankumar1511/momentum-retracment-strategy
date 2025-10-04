@@ -88,7 +88,7 @@ if __name__ == "__main__":
             pd.to_datetime(train_to) - timedelta(days=inference_days)
         ).strftime('%Y-%m-%d')
         try:
-            signal_df = predict_agent.predict_next_interval(
+            signal_df = predict_agent.predict_next_intervals(
                 instrument_name=instrument_name,
                 from_date=inference_start,
                 to_date=train_to,
