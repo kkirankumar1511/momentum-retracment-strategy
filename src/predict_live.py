@@ -1,6 +1,5 @@
 import os
 from dataclasses import dataclass
-from typing import Dict
 
 import joblib
 import numpy as np
@@ -12,12 +11,11 @@ from data_loader import get_kite_client
 from instrument_token import InstrumentTokenManager
 from pipelines.data_pipeline import MarketDataFetcher
 from pipelines.feature_pipeline import IntradayFeatureEngineer
-from strategies.intraday import IntradayStrategy
 
 
 @dataclass
 class PredictAgent:
-    """Loads trained artefacts to deliver the next intraday signal."""
+    """Loads trained artefacts and produces a multi-step close forecast."""
 
     def __init__(self) -> None:
         self.cfg = load_config()
@@ -27,8 +25,6 @@ class PredictAgent:
         self.lookback = int(data_cfg['lookback'])
         self.horizon = int(data_cfg.get('predict_horizon', 1))
         self.feature_engineer = IntradayFeatureEngineer(self.lookback, self.horizon)
-        strategy_cfg = self.cfg.get('strategy', {})
-        self.strategy = IntradayStrategy(**strategy_cfg)
 
         self.kite = get_kite_client(kite_cfg['api_key'], kite_cfg['access_token'])
         self.instrument_token_manager = InstrumentTokenManager()
@@ -65,7 +61,7 @@ class PredictAgent:
         scaler = joblib.load(scaler_path)
         return model, scaler
 
-    def predict_next_interval(
+    def predict_next_intervals(
         self,
         instrument_name: str,
         from_date: str,
@@ -74,51 +70,39 @@ class PredictAgent:
         model, scaler = self.load_model_and_scaler(instrument_name)
         raw_df = self.fetcher.fetch(instrument_name, from_date, to_date)
         feature_frame = self.feature_engineer.prepare_inference_frame(raw_df)
-        self._calibrate_min_predicted_return(feature_frame)
         scaled_features, _ = self.feature_engineer.scale_features(feature_frame, scaler=scaler)
         sequence = self.feature_engineer.build_prediction_sequence(scaled_features)
 
-        predicted_return = float(model.predict(sequence, verbose=0)[0, 0])
+        predicted_closes = model.predict(sequence, verbose=0)[0]
         latest_row = feature_frame.iloc[-1]
-        predicted_close = float(latest_row['close'] * (1 + predicted_return))
+        forecast_frame = self._build_forecast_frame(latest_row, predicted_closes)
+        return forecast_frame
 
-        strategy_row = self._build_strategy_row(latest_row, predicted_return, predicted_close)
-        strategy_df = self.strategy.apply(strategy_row)
-        return strategy_df
+    def _build_forecast_frame(self, row: pd.Series, predicted_closes: np.ndarray) -> pd.DataFrame:
+        base_timestamp = pd.to_datetime(row['date'])
+        interval_delta = self._resolve_interval_delta()
+        steps = np.arange(1, self.horizon + 1)
+        timestamps = [base_timestamp + step * interval_delta for step in steps]
+        current_close = float(row['close'])
+        predicted_returns = (predicted_closes - current_close) / current_close
+        frame = pd.DataFrame(
+            {
+                'interval_ahead': steps,
+                'forecast_timestamp': timestamps,
+                'predicted_close': predicted_closes,
+                'predicted_return': predicted_returns,
+            }
+        )
+        frame['current_close'] = current_close
+        frame['predicted_move'] = frame['predicted_close'] - current_close
+        return frame[['interval_ahead', 'forecast_timestamp', 'current_close', 'predicted_close', 'predicted_move', 'predicted_return']]
 
-    def _build_strategy_row(
-        self,
-        row: pd.Series,
-        predicted_return: float,
-        predicted_close: float,
-    ) -> pd.DataFrame:
-        payload: Dict[str, float] = {
-            'timestamp': row['date'],
-            'Close': row['close'],
-            'RSI': row['rsi'],
-            'EMA_200': row['ema200'],
-            'EMA_50': row['ema50'],
-            'EMA_20': row['ema20'],
-            'Signal': int(predicted_return > 0),
-            'predicted_return': predicted_return,
-            'predicted_close': predicted_close,
-            'projected_move': predicted_close - row['close'],
-            'future_close': row.get('future_close', np.nan),
-        }
-        return pd.DataFrame([payload])
-
-    def _calibrate_min_predicted_return(self, frame: pd.DataFrame) -> float:
-        strategy_cfg = self.cfg.get('strategy', {})
-        configured = strategy_cfg.get('min_predicted_return')
-        percentile = float(strategy_cfg.get('min_return_percentile', 85))
-        if configured is None or (isinstance(configured, str) and configured.lower() == 'auto'):
-            abs_returns = frame['target_return'].abs().dropna()
-            if abs_returns.empty:
-                resolved = 0.0
-            else:
-                resolved = float(np.percentile(abs_returns, percentile))
-            self.strategy.min_predicted_return = resolved
-        else:
-            resolved = float(configured)
-            self.strategy.min_predicted_return = resolved
-        return resolved
+    def _resolve_interval_delta(self) -> pd.Timedelta:
+        interval = str(self.cfg['data'].get('interval', '15minute')).lower()
+        if interval.endswith('minute'):
+            minutes = int(interval.replace('minute', ''))
+            return pd.Timedelta(minutes=minutes)
+        if interval.endswith('hour'):
+            hours = int(interval.replace('hour', ''))
+            return pd.Timedelta(hours=hours)
+        raise ValueError(f"Unsupported interval format: {interval}")

@@ -4,7 +4,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import r2_score
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
 from config import load_config
@@ -13,7 +13,6 @@ from instrument_token import InstrumentTokenManager
 from model import LSTMReturnForecaster
 from pipelines.data_pipeline import MarketDataFetcher
 from pipelines.feature_pipeline import IntradayFeatureEngineer
-from strategies.intraday import IntradayStrategy
 from utils import save_model, save_scaler
 
 
@@ -29,8 +28,6 @@ class TrainingAgent:
         self.lookback = int(data_cfg['lookback'])
         self.horizon = int(data_cfg.get('predict_horizon', 1))
         self.feature_engineer = IntradayFeatureEngineer(self.lookback, self.horizon)
-        strategy_cfg = self.cfg.get('strategy', {})
-        self.strategy = IntradayStrategy(**strategy_cfg)
 
         self.kite = get_kite_client(kite_cfg['api_key'], kite_cfg['access_token'])
         self.instrument_token_manager = InstrumentTokenManager()
@@ -51,11 +48,6 @@ class TrainingAgent:
     ) -> Tuple[LSTMReturnForecaster, object, Dict[str, float]]:
         raw_df = self.fetcher.fetch(kite_instrument, from_date, to_date)
         feature_frame = self.feature_engineer.prepare_training_frame(raw_df)
-        resolved_threshold = self._calibrate_min_predicted_return(feature_frame)
-        print(
-            f"ℹ️ Using min_predicted_return threshold of {resolved_threshold:.5f} "
-            "based on configured strategy settings."
-        )
         scaled_features, scaler = self.feature_engineer.scale_features(feature_frame)
         X, y, meta = self.feature_engineer.build_supervised_dataset(feature_frame, scaled_features)
 
@@ -70,7 +62,8 @@ class TrainingAgent:
             )
 
         model = LSTMReturnForecaster(
-            input_shape=(self.lookback, len(self.feature_engineer.PREDICTOR_COLUMNS))
+            input_shape=(self.lookback, len(self.feature_engineer.PREDICTOR_COLUMNS)),
+            output_dim=self.feature_engineer.horizon,
         )
         train_cfg = self.cfg['training']
         callbacks = [
@@ -96,34 +89,63 @@ class TrainingAgent:
             callbacks=callbacks,
         )
 
-        predicted_returns = model.predict(X_test).flatten()
-        actual_returns = y_test.flatten()
-        predicted_close = meta_test['close'].values * (1 + predicted_returns)
-        actual_close = meta_test['future_close'].values
+        predicted_close = model.predict(X_test)
+        actual_close = y_test
 
-        rmse = float(np.sqrt(mean_squared_error(actual_close, predicted_close)))
-        mae = float(mean_absolute_error(actual_close, predicted_close))
-        r2 = float(r2_score(actual_close, predicted_close))
-        directional_accuracy = float(
-            (np.sign(predicted_returns) == np.sign(actual_returns)).mean() * 100
-        )
+        rmse_per_step = np.sqrt(((predicted_close - actual_close) ** 2).mean(axis=0))
+        mae_per_step = np.abs(predicted_close - actual_close).mean(axis=0)
 
-        strategy_frame = self._build_strategy_frame(meta_test, predicted_returns, predicted_close)
-        strategy_accuracy_raw = self.strategy.evaluate(strategy_frame)
-        if np.isnan(strategy_accuracy_raw):
-            print("ℹ️ Strategy generated no actionable trades on the held-out set.")
-            strategy_accuracy = float('nan')
+        overall_rmse = float(rmse_per_step.mean())
+        overall_mae = float(mae_per_step.mean())
+
+        r2_scores = []
+        sample_count = actual_close.shape[0]
+        if sample_count > 1:
+            for step in range(self.feature_engineer.horizon):
+                r2_scores.append(
+                    r2_score(
+                        actual_close[:, step],
+                        predicted_close[:, step],
+                    )
+                )
         else:
-            strategy_accuracy = float(strategy_accuracy_raw * 100)
+            r2_scores = [float('nan')] * self.feature_engineer.horizon
+        overall_r2 = float(np.nanmean(r2_scores))
+
+        current_close = meta_test['close'].to_numpy().reshape(-1, 1)
+        actual_direction = np.sign(actual_close - current_close)
+        predicted_direction = np.sign(predicted_close - current_close)
+        directional_accuracy_per_step = (
+            (predicted_direction == actual_direction).mean(axis=0) * 100
+        )
+        directional_accuracy = float(directional_accuracy_per_step.mean())
 
         print(
-            f"\n✅ Test Metrics for {kite_instrument}: RMSE={rmse:.2f}, MAE={mae:.2f}, R²={r2:.3f}, "
+            f"\n✅ Test Metrics for {kite_instrument}: "
+            f"Avg RMSE={overall_rmse:.2f}, Avg MAE={overall_mae:.2f}, Avg R²={overall_r2:.3f}, "
             f"Directional Accuracy={directional_accuracy:.2f}%"
         )
-        if np.isnan(strategy_accuracy):
-            print("ℹ️ Strategy accuracy on actionable signals: not available (no trades).")
+
+        horizon_summary = " | ".join(
+            [
+                f"t+{idx+1}: RMSE={rmse_per_step[idx]:.2f}, MAE={mae_per_step[idx]:.2f}, "
+                f"DA={directional_accuracy_per_step[idx]:.2f}%"
+                for idx in range(self.feature_engineer.horizon)
+            ]
+        )
+        print(f"ℹ️ Horizon breakdown -> {horizon_summary}")
+
+        target_accuracy = 80.0
+        if directional_accuracy >= target_accuracy:
+            print(
+                f"✅ Forecast directional accuracy meets the ~80% goal "
+                f"({directional_accuracy:.2f}%)."
+            )
         else:
-            print(f"✅ Strategy accuracy on actionable signals: {strategy_accuracy:.2f}%")
+            print(
+                f"⚠️ Forecast directional accuracy {directional_accuracy:.2f}% "
+                "is below the ~80% goal. Consider retraining with more data or tuning hyperparameters."
+            )
 
         model_path = os.path.join(train_cfg['model_save_path'], f"{kite_instrument}_return_lstm.keras")
         scaler_path = os.path.join(train_cfg['scaler_save_path'], f"{kite_instrument}_return.pkl")
@@ -133,46 +155,13 @@ class TrainingAgent:
         print(f"✅ Scaler saved to {scaler_path}")
 
         metrics = {
-            'rmse': rmse,
-            'mae': mae,
-            'r2': r2,
+            'rmse_avg': overall_rmse,
+            'mae_avg': overall_mae,
+            'r2_avg': overall_r2,
             'directional_accuracy': directional_accuracy,
-            'strategy_accuracy': strategy_accuracy,
-            'resolved_min_predicted_return': resolved_threshold,
+            'rmse_per_step': rmse_per_step.tolist(),
+            'mae_per_step': mae_per_step.tolist(),
+            'directional_accuracy_per_step': directional_accuracy_per_step.tolist(),
         }
 
         return model, scaler, metrics
-
-    def _build_strategy_frame(
-        self,
-        meta: pd.DataFrame,
-        predicted_returns: np.ndarray,
-        predicted_close: np.ndarray,
-    ) -> pd.DataFrame:
-        frame = meta.copy()
-        frame['RSI'] = frame['rsi']
-        frame['Close'] = frame['close']
-        frame['EMA_200'] = frame['ema200']
-        frame['EMA_50'] = frame['ema50']
-        frame['EMA_20'] = frame['ema20']
-        frame['Signal'] = (predicted_returns > 0).astype(int)
-        frame['predicted_return'] = predicted_returns
-        frame['predicted_close'] = predicted_close
-        frame['projected_move'] = frame['predicted_close'] - frame['Close']
-        return frame
-
-    def _calibrate_min_predicted_return(self, frame: pd.DataFrame) -> float:
-        strategy_cfg = self.cfg.get('strategy', {})
-        configured = strategy_cfg.get('min_predicted_return')
-        percentile = float(strategy_cfg.get('min_return_percentile', 85))
-        if configured is None or (isinstance(configured, str) and configured.lower() == 'auto'):
-            abs_returns = frame['target_return'].abs().dropna()
-            if abs_returns.empty:
-                resolved = 0.0
-            else:
-                resolved = float(np.percentile(abs_returns, percentile))
-            self.strategy.min_predicted_return = resolved
-        else:
-            self.strategy.min_predicted_return = float(configured)
-            resolved = self.strategy.min_predicted_return
-        return resolved

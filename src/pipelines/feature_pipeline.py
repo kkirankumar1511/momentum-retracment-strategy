@@ -40,18 +40,39 @@ class IntradayFeatureEngineer:
         'bb_lower',
     ]
 
+    @property
+    def target_columns(self) -> list[str]:
+        return [f'future_close_{step}' for step in range(1, self.horizon + 1)]
+
+    @property
+    def return_columns(self) -> list[str]:
+        return [f'target_return_{step}' for step in range(1, self.horizon + 1)]
+
+    def _annotate_targets(self, frame: pd.DataFrame) -> pd.DataFrame:
+        for step in range(1, self.horizon + 1):
+            future_close_col = f'future_close_{step}'
+            target_return_col = f'target_return_{step}'
+            frame[future_close_col] = frame['close'].shift(-step)
+            frame[target_return_col] = (
+                frame[future_close_col] - frame['close']
+            ) / frame['close']
+        horizon_close_col = f'future_close_{self.horizon}'
+        horizon_return_col = f'target_return_{self.horizon}'
+        frame['future_close'] = frame[horizon_close_col]
+        frame['target_return'] = frame[horizon_return_col]
+        return frame
+
     def prepare_training_frame(self, df: pd.DataFrame) -> pd.DataFrame:
         frame = add_intraday_strategy_features(df)
-        frame['future_close'] = frame['close'].shift(-self.horizon)
-        frame['target_return'] = (frame['future_close'] - frame['close']) / frame['close']
-        frame = frame.dropna(subset=self.PREDICTOR_COLUMNS + ['target_return']).reset_index(drop=True)
+        frame = self._annotate_targets(frame)
+        required_columns = self.PREDICTOR_COLUMNS + self.target_columns
+        frame = frame.dropna(subset=required_columns).reset_index(drop=True)
         return frame
 
     def prepare_inference_frame(self, df: pd.DataFrame) -> pd.DataFrame:
         frame = add_intraday_strategy_features(df)
         frame = frame.dropna(subset=self.PREDICTOR_COLUMNS).reset_index(drop=True)
-        frame['future_close'] = frame['close'].shift(-self.horizon)
-        frame['target_return'] = (frame['future_close'] - frame['close']) / frame['close']
+        frame = self._annotate_targets(frame)
         return frame
 
     def scale_features(
@@ -79,13 +100,14 @@ class IntradayFeatureEngineer:
             raise ValueError("Not enough rows to create sequences with the configured lookback.")
 
         sequences, targets, meta_rows = [], [], []
+        target_cols = self.target_columns
         for idx in range(self.lookback, len(frame)):
             sequences.append(scaled_features[idx - self.lookback: idx])
-            targets.append(frame['target_return'].iloc[idx])
+            targets.append(frame[target_cols].iloc[idx].to_numpy())
             meta_rows.append(frame.iloc[idx])
 
         X = np.array(sequences)
-        y = np.array(targets).reshape(-1, 1)
+        y = np.array(targets)
         meta = pd.DataFrame(meta_rows).reset_index(drop=True)
         return X, y, meta
 
