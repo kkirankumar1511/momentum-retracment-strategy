@@ -81,21 +81,40 @@ class PredictAgent:
     def _build_forecast_frame(self, row: pd.Series, predicted_closes: np.ndarray) -> pd.DataFrame:
         base_timestamp = pd.to_datetime(row['date'])
         interval_delta = self._resolve_interval_delta()
-        steps = np.arange(1, self.horizon + 1)
-        timestamps = [base_timestamp + step * interval_delta for step in steps]
+        predicted_series = np.asarray(predicted_closes, dtype=float).reshape(-1)
+        horizon = predicted_series.size
+        if horizon == 0:
+            raise ValueError('predicted_closes must contain at least one forecast value.')
+
+        steps = np.arange(1, horizon + 1)
+        timestamps = [base_timestamp + int(step) * interval_delta for step in steps]
         current_close = float(row['close'])
-        predicted_returns = (predicted_closes - current_close) / current_close
-        frame = pd.DataFrame(
-            {
-                'interval_ahead': steps,
-                'forecast_timestamp': timestamps,
-                'predicted_close': predicted_closes,
-                'predicted_return': predicted_returns,
-            }
-        )
+        predicted_returns = (predicted_series - current_close) / current_close
+
+        records = []
+        for step, ts, pred_close, pred_return in zip(steps, timestamps, predicted_series, predicted_returns):
+            records.append(
+                {
+                    'interval_ahead': int(step),
+                    'forecast_timestamp': ts,
+                    'predicted_close': float(pred_close),
+                    'predicted_return': float(pred_return),
+                }
+            )
+
+        frame = pd.DataFrame.from_records(records)
         frame['current_close'] = current_close
         frame['predicted_move'] = frame['predicted_close'] - current_close
-        return frame[['interval_ahead', 'forecast_timestamp', 'current_close', 'predicted_close', 'predicted_move', 'predicted_return']]
+        return frame[
+            [
+                'interval_ahead',
+                'forecast_timestamp',
+                'current_close',
+                'predicted_close',
+                'predicted_move',
+                'predicted_return',
+            ]
+        ]
 
     def _resolve_interval_delta(self) -> pd.Timedelta:
         interval = str(self.cfg['data'].get('interval', '15minute')).lower()
