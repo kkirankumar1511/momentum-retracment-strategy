@@ -13,6 +13,14 @@ from features import add_intraday_strategy_features
 @dataclass
 class IntradayFeatureEngineer:
     lookback: int
+    horizon: int = 1
+
+    def __post_init__(self) -> None:
+        if self.lookback <= 0:
+            raise ValueError("lookback must be a positive integer.")
+        if self.horizon <= 0:
+            raise ValueError("predict_horizon must be a positive integer.")
+        self.horizon = int(self.horizon)
 
     # Columns used strictly as model inputs when forecasting the next close.
     PREDICTOR_COLUMNS = [
@@ -32,35 +40,17 @@ class IntradayFeatureEngineer:
         'bb_lower',
     ]
 
-    # Supplementary columns required for the trading strategy evaluation/decision logic.
-    STRATEGY_COLUMNS = [
-        'prev_day_close',
-        'prev_day_open',
-        'prev_day_low',
-        'prev_ema_20',
-        'prev_ema_50',
-        'prev_day_touch_ema20',
-        'prev_day_touch_ema50',
-        'min_5_day_close',
-        'avg_2_days_volume',
-        'avg_10_days_volume',
-        'divergence',
-        'atr',
-    ]
-
-    FEATURE_COLUMNS = PREDICTOR_COLUMNS + STRATEGY_COLUMNS
-
     def prepare_training_frame(self, df: pd.DataFrame) -> pd.DataFrame:
         frame = add_intraday_strategy_features(df)
-        frame['future_close'] = frame['close'].shift(-1)
+        frame['future_close'] = frame['close'].shift(-self.horizon)
         frame['target_return'] = (frame['future_close'] - frame['close']) / frame['close']
-        frame = frame.dropna(subset=self.FEATURE_COLUMNS + ['target_return']).reset_index(drop=True)
+        frame = frame.dropna(subset=self.PREDICTOR_COLUMNS + ['target_return']).reset_index(drop=True)
         return frame
 
     def prepare_inference_frame(self, df: pd.DataFrame) -> pd.DataFrame:
         frame = add_intraday_strategy_features(df)
-        frame = frame.dropna(subset=self.FEATURE_COLUMNS).reset_index(drop=True)
-        frame['future_close'] = frame['close'].shift(-1)
+        frame = frame.dropna(subset=self.PREDICTOR_COLUMNS).reset_index(drop=True)
+        frame['future_close'] = frame['close'].shift(-self.horizon)
         frame['target_return'] = (frame['future_close'] - frame['close']) / frame['close']
         return frame
 

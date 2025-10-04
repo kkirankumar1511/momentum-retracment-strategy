@@ -5,7 +5,7 @@ project:
 
 data:
   lookback: 60          # number of past days to use as input
-  predict_horizon: 10   # number of days to predict (we will average them)
+  predict_horizon: 10   # number of intervals ahead to forecast the close/return
   interval: 15minute
   train_from: '2024-09-01 09:15:00'
   train_to: '2025-03-01 15:30:00'
@@ -33,7 +33,6 @@ strategy:
   min_buy_rsi: 52.0
   max_sell_rsi: 45.0
   require_ema_alignment: true   # insist on EMA trend confirmation
-  min_volume_ratio: 1.0         # Avg_2_days_Volume / Avg_10_days_Volume must exceed this
 
 kite:
   api_key: "usvvbzqq7736z01b"

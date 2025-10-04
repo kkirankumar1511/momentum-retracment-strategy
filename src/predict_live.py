@@ -24,8 +24,9 @@ class PredictAgent:
         data_cfg = self.cfg['data']
         kite_cfg = self.cfg['kite']
 
-        self.lookback = data_cfg['lookback']
-        self.feature_engineer = IntradayFeatureEngineer(self.lookback)
+        self.lookback = int(data_cfg['lookback'])
+        self.horizon = int(data_cfg.get('predict_horizon', 1))
+        self.feature_engineer = IntradayFeatureEngineer(self.lookback, self.horizon)
         strategy_cfg = self.cfg.get('strategy', {})
         self.strategy = IntradayStrategy(**strategy_cfg)
 
@@ -98,22 +99,10 @@ class PredictAgent:
             'EMA_200': row['ema200'],
             'EMA_50': row['ema50'],
             'EMA_20': row['ema20'],
-            'ATR': row['atr'],
-            'prev_day_touch_EMA20': bool(row['prev_day_touch_ema20']),
-            'prev_day_touch_EMA50': bool(row['prev_day_touch_ema50']),
-            'prev_day_Close': row['prev_day_close'],
-            'prev_day_Open': row['prev_day_open'],
-            'prev_day_Low': row['prev_day_low'],
-            '5_day_min_of_close': row['min_5_day_close'],
-            'Avg_2_days_Volume': row['avg_2_days_volume'],
-            'Avg_10_days_Volume': row['avg_10_days_volume'],
-            'divergence': row['divergence'],
             'Signal': int(predicted_return > 0),
             'predicted_return': predicted_return,
             'predicted_close': predicted_close,
             'projected_move': predicted_close - row['close'],
-            'stop_loss_buy': row['close'] - row['atr'] * self.strategy.atr_multiple,
-            'stop_loss_sell': row['close'] + row['atr'] * self.strategy.atr_multiple,
             'future_close': row.get('future_close', np.nan),
         }
         return pd.DataFrame([payload])

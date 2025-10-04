@@ -25,7 +25,29 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['bb_middle'] = middle
     df['bb_lower'] = lower
 
-    df['atr'] = talib.ATR(df['high'], df['low'], close, timeperiod=14)
+    # TALIB requires long lookbacks for several indicators.  On short samples it
+    # can yield entirely empty columns which would later be dropped, leaving zero
+    # training rows.  Provide lightweight pandas fallbacks in that situation so
+    # feature engineering still succeeds.
+    if df['rsi'].isna().all():
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1 / 14.0, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / 14.0, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        df['rsi'] = 100 - (100 / (1 + rs))
+
+    for span, column in ((20, 'ema20'), (50, 'ema50'), (200, 'ema200')):
+        if df[column].isna().all():
+            df[column] = close.ewm(span=span, adjust=False).mean()
+
+    if df['macd'].isna().all() or df['macdsignal'].isna().all():
+        fast = close.ewm(span=12, adjust=False).mean()
+        slow = close.ewm(span=26, adjust=False).mean()
+        fallback_macd = fast - slow
+        df['macd'] = fallback_macd
+        df['macdsignal'] = fallback_macd.ewm(span=9, adjust=False).mean()
 
     df.bfill(inplace=True)
     df.ffill(inplace=True)
@@ -42,83 +64,4 @@ def add_intraday_strategy_features(df: pd.DataFrame) -> pd.DataFrame:
     df.sort_values('date', inplace=True)
 
     df = add_technical_indicators(df)
-    df['session_date'] = df['date'].dt.normalize()
-
-    daily = (
-        df.groupby('session_date')
-        .agg(
-            daily_low=('low', 'min'),
-            daily_close=('close', 'last'),
-            daily_open=('open', 'first'),
-            daily_volume=('volume', 'sum')
-        )
-        .sort_index()
-    )
-
-    daily['prev_day_low'] = daily['daily_low'].shift(1)
-    daily['prev_day_close'] = daily['daily_close'].shift(1)
-    daily['prev_day_open'] = daily['daily_open'].shift(1)
-    daily['prev_ema_20'] = daily['daily_close'].shift(1).rolling(window=20).mean()
-    daily['prev_ema_50'] = daily['daily_close'].shift(1).rolling(window=50).mean()
-
-    daily['prev_day_touch_ema20'] = (
-        (daily['prev_day_close'] > daily['prev_ema_20'])
-        & (daily['prev_day_low'] < daily['prev_ema_20'])
-    )
-    daily['prev_day_touch_ema50'] = (
-        (daily['prev_day_close'] > daily['prev_ema_50'])
-        & (daily['prev_day_low'] < daily['prev_ema_50'])
-    )
-
-    daily['min_5_day_close'] = daily['daily_close'].rolling(window=5).min()
-    daily['avg_2_days_volume'] = daily['daily_volume'].rolling(window=2).mean()
-    daily['avg_10_days_volume'] = daily['daily_volume'].rolling(window=10).mean()
-
-    feature_cols = [
-        'prev_day_low',
-        'prev_day_close',
-        'prev_day_open',
-        'prev_ema_20',
-        'prev_ema_50',
-        'prev_day_touch_ema20',
-        'prev_day_touch_ema50',
-        'min_5_day_close',
-        'avg_2_days_volume',
-        'avg_10_days_volume',
-    ]
-
-    df = df.merge(daily[feature_cols], left_on='session_date', right_index=True, how='left')
-
-    # Divergence heuristic: RSI disagreeing with price direction
-    price_change = df['close'].diff()
-    rsi_change = df['rsi'].diff()
-    divergence = np.where(
-        (price_change > 0) & (rsi_change < 0),
-        -1,
-        np.where((price_change < 0) & (rsi_change > 0), -1, 1)
-    )
-    df['divergence'] = divergence
-
-    bool_cols = ['prev_day_touch_ema20', 'prev_day_touch_ema50']
-    for col in bool_cols:
-        df[col] = df[col].fillna(False).astype(bool)
-
-    df[['avg_2_days_volume', 'avg_10_days_volume', 'min_5_day_close', 'prev_ema_20', 'prev_ema_50', 'atr']] = (
-        df[
-            [
-                'avg_2_days_volume',
-                'avg_10_days_volume',
-                'min_5_day_close',
-                'prev_ema_20',
-                'prev_ema_50',
-                'atr',
-            ]
-        ]
-        .fillna(0.0)
-    )
-    df[['prev_day_low', 'prev_day_close', 'prev_day_open']] = (
-        df[['prev_day_low', 'prev_day_close', 'prev_day_open']].fillna(method='ffill').fillna(method='bfill')
-    )
-
-    df.drop(columns=['session_date'], inplace=True)
     return df
