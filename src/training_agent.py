@@ -6,7 +6,13 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from config import load_config
 from data_loader import get_kite_client, load_from_kite
 from features import add_technical_indicators
-from utils import create_sequences, save_model, save_scaler, get_instrument_token
+from utils import (
+    calculate_directional_accuracy,
+    create_sequences,
+    save_model,
+    save_scaler,
+    get_instrument_token,
+)
 from model import build_lstm_model
 from instrument_token import InstrumentTokenManager
 import talib
@@ -79,11 +85,25 @@ class TrainingAgent:
         pred_close = last_close_test * (1 + y_pred.flatten())
         actual_close = df['close'].values[lookback+split_idx:]
 
+        # --- Directional accuracy ---
+        actual_returns = y_test.flatten()
+        predicted_returns = y_pred.flatten()
+        directional_accuracy = calculate_directional_accuracy(actual_returns, predicted_returns)
+
         # --- Metrics ---
         rmse = np.sqrt(mean_squared_error(actual_close, pred_close))
         mae = mean_absolute_error(actual_close, pred_close)
         r2 = r2_score(actual_close, pred_close)
-        print(f"\n✅ Test Metrics for {kite_instrument}: RMSE={rmse:.2f}, MAE={mae:.2f}, R²={r2:.3f}")
+        print(
+            "\n✅ Test Metrics for {instrument}: RMSE={rmse:.2f}, MAE={mae:.2f}, R²={r2:.3f}, "
+            "Directional Accuracy={direction:.1%}".format(
+                instrument=kite_instrument,
+                rmse=rmse,
+                mae=mae,
+                r2=r2,
+                direction=directional_accuracy,
+            )
+        )
 
         # --- Plot ---
         plt.figure(figsize=(12,6))
