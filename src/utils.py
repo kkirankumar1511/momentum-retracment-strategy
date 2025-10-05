@@ -3,6 +3,22 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
+
+def _as_numpy(array_like):
+    """Return ``array_like`` as a 1-D :class:`numpy.ndarray`.
+
+    ``array_like`` can be any array-like structure (list, tuple, Pandas Series,
+    ``numpy`` array). ``None`` values raise a :class:`ValueError` so that
+    callers can fail fast instead of silently returning ``nan`` heavy metrics.
+    """
+
+    if array_like is None:
+        raise ValueError("array_like cannot be None")
+    arr = np.asarray(array_like).reshape(-1)
+    if arr.size == 0:
+        raise ValueError("array_like must contain at least one element")
+    return arr
+
 def save_scaler(scaler, path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(scaler, path)
@@ -62,4 +78,36 @@ def create_sequences(data, lookback, horizon=1, target_indices=None):
     y = np.array(y)
 
     return X, y
+
+
+def calculate_directional_accuracy(actual_returns, predicted_returns):
+    """Return the fraction of times the predicted and actual returns agree in sign.
+
+    Parameters
+    ----------
+    actual_returns : array-like
+        Sequence of realised returns.
+    predicted_returns : array-like
+        Sequence of model predicted returns.
+
+    Returns
+    -------
+    float
+        Directional accuracy in ``[0, 1]``. Zero-valued returns are ignored in
+        the comparison because they do not carry directional information.
+    """
+
+    actual = _as_numpy(actual_returns)
+    predicted = _as_numpy(predicted_returns)
+
+    if actual.shape != predicted.shape:
+        raise ValueError("actual_returns and predicted_returns must have the same shape")
+
+    mask = (actual != 0) | (predicted != 0)
+    if not np.any(mask):
+        return 0.0
+
+    actual_sign = np.sign(actual[mask])
+    predicted_sign = np.sign(predicted[mask])
+    return float(np.mean(actual_sign == predicted_sign))
 
